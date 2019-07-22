@@ -1,0 +1,411 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Metadata": {
+
+  },
+  "Resources": {
+    "RestAPI": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": "AppProxyApi"
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "b587f6c5-03a2-4f01-b34d-623dd6b09239"
+        }
+      },
+      "DependsOn": [
+        "SingleInstance"
+      ]
+    },
+    "ProxyMethod": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "HttpMethod": "ANY",
+        "ResourceId": {
+          "Ref": "Resource"
+        },
+        "RestApiId": {
+          "Ref": "RestAPI"
+        },
+        "AuthorizationType": "NONE",
+        "RequestParameters": {
+          "method.request.path.proxy": true
+        },
+        "Integration": {
+          "CacheKeyParameters": [
+            "method.request.path.proxy"
+          ],
+          "RequestParameters": {
+            "integration.request.path.proxy": "method.request.path.proxy"
+          },
+          "IntegrationHttpMethod": "ANY",
+          "Type": "HTTP_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "http://",
+                {
+                  "Fn::GetAtt": [
+                    "SingleInstance",
+                    "PublicIp"
+                  ]
+                },
+                "/{proxy}"
+              ]
+            ]
+          },
+          "PassthroughBehavior": "WHEN_NO_MATCH",
+          "IntegrationResponses": [{
+            "StatusCode": 200
+          }]
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "3625c01a-0148-41f9-86f6-b9eca16b78b6"
+        }
+      }
+    },
+    "Resource": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "RestAPI",
+            "RootResourceId"
+          ]
+        },
+        "RestApiId": {
+          "Ref": "RestAPI"
+        },
+        "PathPart": "{proxy+}"
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "d6f48a77-7da5-4f07-ad77-7f4647c060b8"
+        }
+      }
+    },
+    "Deployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "RestAPI"
+        },
+        "StageName": "dev"
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "ae3b553c-b4c3-4999-949e-84bb3a956f1c"
+        }
+      },
+      "DependsOn": [
+        "ProxyMethod"
+      ]
+    },
+    "AppInstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [{
+          "Ref": "AppEC2Role"
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "44cfda6e-df36-40e0-9a26-112b46b25656"
+        }
+      }
+    },
+    "AppEC2Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+          }]
+        },
+        "Path": "/",
+        "Policies": [{
+          "PolicyName": {
+            "Fn::Join": [
+              "-",
+              [{
+                  "Ref": "ApplicationName"
+                },
+                "AppEC2Role",
+                {
+                  "Ref": "AWS::Region"
+                }
+              ]
+            ]
+          },
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "firehose:DeleteDeliveryStream",
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch",
+                "firehose:UpdateDestination"
+              ],
+              "Resource": "*"
+            }]
+          }
+        }]
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "80b5703a-7744-429f-bf2a-421faab823fa"
+        }
+      }
+    },
+    "SingleInstance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Fn::FindInMap": [
+            "AmazonLinuxAMI",
+            {
+              "Ref": "AWS::Region"
+            },
+            "AMI"
+          ]
+        },
+        "InstanceType": "t2.small",
+        "KeyName": {
+          "Ref": "InstanceKeyName"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": ["", [
+              "#!/bin/bash -xe\n",
+              "yum install -y aws-cfn-bootstrap\n",
+              "curl -sL https://rpm.nodesource.com/setup_10.x | sudo bash -\n",
+              "yum install -y nodejs\n",
+
+              "# Install the files and packages from the metadata\n",
+              "/opt/aws/bin/cfn-init -v ",
+              "         --stack ", {
+                "Ref": "AWS::StackName"
+              },
+              "         --resource SingleInstance ",
+              "         --configsets Install ",
+              "         --region ", {
+                "Ref": "AWS::Region"
+              }, "\n",
+              "nohup node /var/www/html/index.js </dev/null &"
+            ]]
+          }
+        },
+        "SubnetId": {
+          "Ref": "VpcSubnet"
+        },
+        "Tags": [{
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [{
+                    "Ref": "ApplicationName"
+                  },
+                  "DeployGroup",
+                  {
+                    "Ref": "AWS::Region"
+                  }
+                ]
+              ]
+            }
+          },
+          {
+            "Key": "Project",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [{
+                    "Ref": "ApplicationName"
+                  },
+                  {
+                    "Ref": "AWS::Region"
+                  }
+                ]
+              ]
+            }
+          }
+        ],
+        "SecurityGroupIds": [{
+          "Ref": "EC2SecurityGroup"
+        }],
+        "IamInstanceProfile": {
+          "Ref": "AppInstanceProfile"
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "925ca427-e457-4fd2-88b0-1a902be5a39e"
+        },
+        "AWS::CloudFormation::Init": {
+          "configSets": {
+            "Install": ["Install"]
+          },
+          "Install": {
+            "packages": {
+              "yum": {
+                "aws-cfn-bootstrap": [],
+                "nginx": []
+              }
+            },
+            "files": {
+              "/var/www/html/index.js": {
+                "content": {
+                  "Fn::Join": ["", [
+                    "const http = require('http') \n",
+                    "const port = 80 \n",
+                    "const requestHandler = (request, response) => { \n",
+                    "    console.log(request.url) \n",
+                    "    response.end('Hello Node.js Server!') \n",
+                    "} \n",
+                    "\n",
+                    "const server = http.createServer(requestHandler) \n",
+                    "server.listen(port, (err) => { \n",
+                    " if (err) {\n",
+                    "    return console.log('something bad happened', err)\n",
+                    " }\n",
+                    "\n",
+                    " console.log(`server is listening on ${port}`) \n",
+                    "}) \n"
+                  ]]
+                },
+                "mode": "000600"
+              }
+            }
+          }
+        }
+      }
+    },
+    "EC2SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Metadata": {
+        "AWS::CloudFormation::Designer": {
+          "id": "bb536363-2930-4c3a-b94c-a29ead84f4aa"
+        }
+      },
+      "Properties": {
+        "GroupDescription": "Security Group for EC2 App",
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "Tags": [{
+            "Key": "Name",
+            "Value": "EC2SecurityGroup"
+          },
+          {
+            "Key": "ResourceGroup",
+            "Value": "CloudFormationResource"
+          },
+          {
+            "Key": "Project",
+            "Value": {
+              "Fn::Join": [
+                "-",
+                [{
+                    "Ref": "ApplicationName"
+                  },
+                  {
+                    "Ref": "AWS::Region"
+                  }
+                ]
+              ]
+            }
+          }
+        ],
+        "SecurityGroupIngress": [{
+            "IpProtocol": "tcp",
+            "FromPort": "22",
+            "ToPort": "22",
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": "80",
+            "ToPort": "80",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ]
+      }
+    }
+  },
+  "Mappings": {
+    "AmazonLinuxAMI": {
+      "us-east-1": {
+        "AMI": "ami-a4c7edb2"
+      },
+      "us-east-2": {
+        "AMI": "ami-8a7859ef"
+      },
+      "us-west-1": {
+        "AMI": "ami-327f5352"
+      },
+      "us-west-2": {
+        "AMI": "ami-6df1e514"
+      },
+      "eu-west-1": {
+        "AMI": "ami-d7b9a2b1"
+      },
+      "eu-west-2": {
+        "AMI": "ami-ed100689"
+      },
+      "eu-central-1": {
+        "AMI": "ami-82be18ed"
+      },
+      "sa-east-1": {
+        "AMI": "ami-87dab1eb"
+      },
+      "ap-southeast-1": {
+        "AMI": "ami-77af2014"
+      },
+      "ap-southeast-2": {
+        "AMI": "ami-10918173"
+      },
+      "ap-northeast-1": {
+        "AMI": "ami-3bd3c45c"
+      },
+      "ap-northeast-2": {
+        "AMI": "ami-e21cc38c"
+      },
+      "ca-central-1": {
+        "AMI": "ami-a7aa15c3"
+      },
+      "ap-south-1": {
+        "AMI": "ami-47205e28"
+      }
+    }
+  },
+  "Parameters": {
+    "InstanceKeyName": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "The name of the private key file to use for SSH/RDP access.  You shouldn't need to do any SSH access, but just in case."
+    },
+    "ApplicationName": {
+      "Description": "Name of the application deploying for the Social Media Analytics",
+      "Type": "String",
+      "Default": "ApiGatewayProxyToEc2"
+    },
+    "VpcSubnet": {
+      "Description": "SubnetId in VPC",
+      "Type": "AWS::EC2::Subnet::Id"
+    },
+    "VpcId": {
+      "Description": "VPCId of Virtual Private Cloud (VPC)..",
+      "Type": "AWS::EC2::VPC::Id"
+    }
+  }
+}
